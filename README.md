@@ -36,11 +36,22 @@ go build -o ccsessions .
 
 ## Resume mode
 
-Press `m` on the sessions (or conversation) screen to toggle the resume
-command shown between:
+Press `m` on the sessions (or conversation) screen to cycle the resume command
+through every Claude Code permission mode. The footer shows the active mode and
+a one-line hint:
 
-- **normal** — `claude --resume <id>`
-- **bypass permissions** — `claude --resume <id> --dangerously-skip-permissions`
-  (resumes without asking for any permission approvals)
+| Mode                 | Command shown                                             |
+|----------------------|----------------------------------------------------------|
+| normal               | `claude --resume <id>`                                    |
+| plan                 | `claude --resume <id> --permission-mode plan`            |
+| accept edits         | `claude --resume <id> --permission-mode acceptEdits`     |
+| auto                 | `claude --resume <id> --permission-mode auto`            |
+| don't ask            | `claude --resume <id> --permission-mode dontAsk`         |
+| bypass permissions   | `claude --resume <id> --dangerously-skip-permissions`    |
 
-The footer shows the active mode, e.g. `m mode [bypass permissions]`.
+The mode is a display setting only — the app never runs anything.
+
+## Loading indicator
+
+Reading a folder's sessions or a large conversation can take a moment, so a
+centered spinner (`Loading …`) shows while that work is in flight.

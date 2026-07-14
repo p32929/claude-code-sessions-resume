@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/bubbles/list"
+	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -36,6 +37,8 @@ var (
 	toolStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("141"))
 	thinkStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("244")).Italic(true)
 	errTurnStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("203"))
+	spinnerStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("81"))
+	loadStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("81")).Bold(true).Padding(0, 1)
 )
 
 // ---------- list items ----------
@@ -76,10 +79,14 @@ type model struct {
 	sessList list.Model
 	pathIn   textinput.Model
 	convVP   viewport.Model
+	spin     spinner.Model
+
+	loading  bool
+	loadWhat string
 
 	curProject Project
 	curSession Session
-	resumeMode ResumeMode
+	resumeMode int // index into ResumeModes
 }
 
 func newModel() model {
@@ -101,18 +108,25 @@ func newModel() model {
 	sl.SetShowStatusBar(true)
 	sl.SetFilteringEnabled(true)
 
+	sp := spinner.New()
+	sp.Spinner = spinner.Dot
+	sp.Style = spinnerStyle
+
 	m := model{
 		state:    viewProjects,
 		projList: pl,
 		sessList: sl,
 		pathIn:   pi,
 		convVP:   viewport.New(0, 0),
+		spin:     sp,
+		loading:  true,
+		loadWhat: "Loading projects",
 	}
 	return m
 }
 
 func (m model) Init() tea.Cmd {
-	return loadProjectsCmd
+	return tea.Batch(loadProjectsCmd, m.spin.Tick)
 }
 
 // ---------- messages ----------
@@ -189,7 +203,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.layout()
 		return m, nil
 
+	case spinner.TickMsg:
+		if !m.loading {
+			return m, nil
+		}
+		var cmd tea.Cmd
+		m.spin, cmd = m.spin.Update(msg)
+		return m, cmd
+
 	case projectsLoadedMsg:
+		m.loading = false
 		if msg.err != nil {
 			m.err = msg.err.Error()
 			return m, nil
@@ -202,6 +225,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case sessionsLoadedMsg:
+		m.loading = false
 		if msg.err != nil {
 			m.err = msg.err.Error()
 			m.state = viewProjects
@@ -221,6 +245,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case conversationLoadedMsg:
+		m.loading = false
 		if msg.err != nil {
 			m.err = msg.err.Error()
 			return m, nil
@@ -255,7 +280,8 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, textinput.Blink
 			case "enter":
 				if it, ok := m.projList.SelectedItem().(projItem); ok {
-					return m, loadSessionsCmd(it.p)
+					cmd := m.startLoad("Loading sessions", loadSessionsCmd(it.p))
+					return m, cmd
 				}
 			}
 		}
@@ -274,7 +300,8 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if strings.TrimSpace(val) == "" {
 				return m, nil
 			}
-			return m, resolvePathCmd(val)
+			cmd := m.startLoad("Resolving path", resolvePathCmd(val))
+			return m, cmd
 		}
 		var cmd tea.Cmd
 		m.pathIn, cmd = m.pathIn.Update(msg)
@@ -287,12 +314,13 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.state = viewProjects
 				return m, nil
 			case "m":
-				m.resumeMode = toggleMode(m.resumeMode)
+				m.resumeMode = cycleMode(m.resumeMode)
 				return m, nil
 			case "enter":
 				if it, ok := m.sessList.SelectedItem().(sessItem); ok {
 					m.curSession = it.s
-					return m, loadConversationCmd(it.s.FilePath)
+					cmd := m.startLoad("Loading conversation", loadConversationCmd(it.s.FilePath))
+					return m, cmd
 				}
 			}
 		}
@@ -306,7 +334,7 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.state = viewSessions
 			return m, nil
 		case "m":
-			m.resumeMode = toggleMode(m.resumeMode)
+			m.resumeMode = cycleMode(m.resumeMode)
 			return m, nil
 		}
 		var cmd tea.Cmd
@@ -350,6 +378,9 @@ func (m *model) layout() {
 // ---------- view ----------
 
 func (m model) View() string {
+	if m.loading {
+		return m.loaderView()
+	}
 	switch m.state {
 	case viewProjects:
 		return m.viewProjectsRender()
@@ -361,6 +392,16 @@ func (m model) View() string {
 		return m.viewConversationRender()
 	}
 	return ""
+}
+
+// loaderView shows a centered spinner with a label while work is in flight.
+func (m model) loaderView() string {
+	content := m.spin.View() + loadStyle.Render(m.loadWhat+" …")
+	w, h := m.width, m.height
+	if w <= 0 {
+		return content
+	}
+	return lipgloss.Place(w, h, lipgloss.Center, lipgloss.Center, content)
 }
 
 func (m model) viewProjectsRender() string {
@@ -388,10 +429,12 @@ func (m model) viewSessionsRender() string {
 	body := m.sessList.View()
 	var footer string
 	if it, ok := m.sessList.SelectedItem().(sessItem); ok {
-		resume := resumeStyle.Render("resume:  " + it.s.ResumeCommand(m.resumeMode))
+		mode := ResumeModes[m.resumeMode]
+		resume := resumeStyle.Render("resume:  " + it.s.ResumeCommand(mode))
 		cwd := dimStyle.Render("run from: " + orDash(it.s.Cwd))
-		help := footerStyle.Render(fmt.Sprintf("enter view · / filter · m mode [%s] · esc back", m.resumeMode.Label()))
-		footer = resume + "\n" + cwd + "\n" + help
+		modeLine := dimStyle.Render(fmt.Sprintf("mode:    %s — %s", mode.Name, mode.Desc))
+		help := footerStyle.Render("enter view · / filter · m cycle mode · esc back")
+		footer = resume + "\n" + cwd + "\n" + modeLine + "\n" + help
 	} else {
 		footer = footerStyle.Render("no session selected · esc back")
 	}
@@ -403,18 +446,25 @@ func (m model) viewSessionsRender() string {
 
 func (m model) viewConversationRender() string {
 	header := titleStyle.Render(fmt.Sprintf("%s  ·  %s", short(m.curSession.ID), oneLine(m.curSession.Title, 60)))
+	mode := ResumeModes[m.resumeMode]
 	scrollPct := fmt.Sprintf("%3.0f%%", m.convVP.ScrollPercent()*100)
 	footer := footerStyle.Render(fmt.Sprintf("↑/↓/pgup/pgdn scroll · %s · m mode [%s] · esc back    resume: %s",
-		scrollPct, m.resumeMode.Label(), m.curSession.ResumeCommand(m.resumeMode)))
+		scrollPct, mode.Name, m.curSession.ResumeCommand(mode)))
 	return header + "\n" + m.convVP.View() + "\n" + footer
 }
 
-// toggleMode flips between the two resume modes.
-func toggleMode(m ResumeMode) ResumeMode {
-	if m == ResumeNormal {
-		return ResumeBypass
-	}
-	return ResumeNormal
+// cycleMode advances to the next resume mode, wrapping around.
+func cycleMode(i int) int {
+	return (i + 1) % len(ResumeModes)
+}
+
+// startLoad marks the model busy with a labelled spinner and returns a command
+// that runs the given work alongside the spinner animation.
+func (m *model) startLoad(what string, work tea.Cmd) tea.Cmd {
+	m.loading = true
+	m.loadWhat = what
+	m.err = ""
+	return tea.Batch(work, m.spin.Tick)
 }
 
 func orDash(s string) string {

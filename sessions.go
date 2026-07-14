@@ -66,35 +66,32 @@ type Session struct {
 	SizeBytes int64
 }
 
-// ResumeMode selects which flavour of resume command to display.
-type ResumeMode int
+// ResumeMode is one of Claude Code's permission modes, plus the flag needed
+// to launch a resumed session in that mode.
+type ResumeMode struct {
+	Name string // short label shown in the UI
+	Flag string // flag(s) appended to the resume command ("" = plain default)
+	Desc string // one-line hint about what the mode does
+}
 
-const (
-	// ResumeNormal resumes with the usual permission prompts.
-	ResumeNormal ResumeMode = iota
-	// ResumeBypass resumes skipping all permission prompts.
-	ResumeBypass
-)
-
-// Label is a short human name for the mode, shown in the UI.
-func (m ResumeMode) Label() string {
-	switch m {
-	case ResumeBypass:
-		return "bypass permissions"
-	default:
-		return "normal"
-	}
+// ResumeModes lists every mode the user can cycle through with the mode key.
+// Order matches Claude Code's escalation from safest to most permissive.
+var ResumeModes = []ResumeMode{
+	{"normal", "", "permissions work normally (asks before acting)"},
+	{"plan", "--permission-mode plan", "read-only; plans before making changes"},
+	{"accept edits", "--permission-mode acceptEdits", "auto-accepts file edits"},
+	{"auto", "--permission-mode auto", "auto-approves allowed actions"},
+	{"don't ask", "--permission-mode dontAsk", "does not prompt for permissions"},
+	{"bypass permissions", "--dangerously-skip-permissions", "skips ALL permission checks"},
 }
 
 // ResumeCommand returns the shell command to resume this session in the
 // given mode.
 func (s Session) ResumeCommand(mode ResumeMode) string {
-	switch mode {
-	case ResumeBypass:
-		return fmt.Sprintf("claude --resume %s --dangerously-skip-permissions", s.ID)
-	default:
+	if mode.Flag == "" {
 		return fmt.Sprintf("claude --resume %s", s.ID)
 	}
+	return fmt.Sprintf("claude --resume %s %s", s.ID, mode.Flag)
 }
 
 // ---------- Project (a folder that has Claude sessions) ----------

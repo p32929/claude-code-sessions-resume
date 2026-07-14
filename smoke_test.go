@@ -27,8 +27,10 @@ func TestListAndParseRealData(t *testing.T) {
 	}
 	s := sess[0]
 	t.Logf("session %s title=%q msgs=%d cwd=%s resume=%q",
-		short(s.ID), s.Title, s.MsgCount, s.Cwd, s.ResumeCommand(ResumeNormal))
-	t.Logf("bypass cmd: %q", s.ResumeCommand(ResumeBypass))
+		short(s.ID), s.Title, s.MsgCount, s.Cwd, s.ResumeCommand(ResumeModes[0]))
+	for _, mode := range ResumeModes {
+		t.Logf("mode %-18s -> %q", mode.Name, s.ResumeCommand(mode))
+	}
 	if s.ID == "" {
 		t.Error("empty session id")
 	}
