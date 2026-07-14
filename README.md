@@ -81,6 +81,8 @@ Press `m` on the sessions or conversation screen to cycle the resume command thr
 
 > **Note:** the mode is a display setting only — the app never runs anything. Copy the command it shows and run it yourself.
 
+Your selected mode is **remembered between runs** (saved to `ccsessions/config.json` in your OS config dir, e.g. `~/.config/ccsessions/` on Linux or `~/Library/Application Support/ccsessions/` on macOS), so you don't have to re-pick it every time.
+
 Run the resume command **from the session's original working directory** (shown in the `run from:` line), since `claude --resume` is directory-scoped.
 
 ---

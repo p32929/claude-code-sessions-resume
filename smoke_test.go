@@ -56,3 +56,29 @@ func TestEncodePath(t *testing.T) {
 		t.Fatal("empty encode")
 	}
 }
+
+func TestResumeModePersistence(t *testing.T) {
+	path, err := configPath()
+	if err != nil {
+		t.Skip("no config dir")
+	}
+	// Back up any existing config so we don't clobber the user's real one.
+	orig, hadOrig := os.ReadFile(path)
+	t.Cleanup(func() {
+		if hadOrig == nil {
+			os.WriteFile(path, orig, 0o644)
+		} else {
+			os.Remove(path)
+		}
+	})
+
+	// Save the last mode (bypass) and read it back.
+	want := len(ResumeModes) - 1
+	saveResumeModeIndex(want)
+	got := loadResumeModeIndex()
+	if got != want {
+		t.Fatalf("round-trip failed: saved %d (%s), loaded %d (%s)",
+			want, ResumeModes[want].Name, got, ResumeModes[got].Name)
+	}
+	t.Logf("persisted mode: %s", ResumeModes[got].Name)
+}

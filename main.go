@@ -113,14 +113,15 @@ func newModel() model {
 	sp.Style = spinnerStyle
 
 	m := model{
-		state:    viewProjects,
-		projList: pl,
-		sessList: sl,
-		pathIn:   pi,
-		convVP:   viewport.New(0, 0),
-		spin:     sp,
-		loading:  true,
-		loadWhat: "Loading projects",
+		state:      viewProjects,
+		projList:   pl,
+		sessList:   sl,
+		pathIn:     pi,
+		convVP:     viewport.New(0, 0),
+		spin:       sp,
+		loading:    true,
+		loadWhat:   "Loading projects",
+		resumeMode: loadResumeModeIndex(),
 	}
 	return m
 }
@@ -315,6 +316,7 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			case "m":
 				m.resumeMode = cycleMode(m.resumeMode)
+				saveResumeModeIndex(m.resumeMode)
 				return m, nil
 			case "enter":
 				if it, ok := m.sessList.SelectedItem().(sessItem); ok {
@@ -335,6 +337,7 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case "m":
 			m.resumeMode = cycleMode(m.resumeMode)
+			saveResumeModeIndex(m.resumeMode)
 			return m, nil
 		}
 		var cmd tea.Cmd
