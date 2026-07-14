@@ -29,7 +29,18 @@ go build -o ccsessions .
 |---------------|-------------------------------------------------------------|
 | Projects      | `↑/↓` move · `/` filter · `enter` open · `p` paste path · `q` quit |
 | Paste path    | type/paste · `enter` resolve · `esc` back                   |
-| Sessions      | `↑/↓` move · `/` filter · `enter` view · `esc`/`q` back      |
-| Conversation  | `↑/↓ pgup/pgdn` scroll · `esc`/`q` back                      |
+| Sessions      | `↑/↓` move · `/` filter · `enter` view · `m` resume mode · `esc`/`q` back |
+| Conversation  | `↑/↓ pgup/pgdn` scroll · `m` resume mode · `esc`/`q` back    |
 
 `ctrl+c` quits from anywhere.
+
+## Resume mode
+
+Press `m` on the sessions (or conversation) screen to toggle the resume
+command shown between:
+
+- **normal** — `claude --resume <id>`
+- **bypass permissions** — `claude --resume <id> --dangerously-skip-permissions`
+  (resumes without asking for any permission approvals)
+
+The footer shows the active mode, e.g. `m mode [bypass permissions]`.

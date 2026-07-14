@@ -66,9 +66,35 @@ type Session struct {
 	SizeBytes int64
 }
 
-// ResumeCommand returns the shell command to resume this session.
-func (s Session) ResumeCommand() string {
-	return fmt.Sprintf("claude --resume %s", s.ID)
+// ResumeMode selects which flavour of resume command to display.
+type ResumeMode int
+
+const (
+	// ResumeNormal resumes with the usual permission prompts.
+	ResumeNormal ResumeMode = iota
+	// ResumeBypass resumes skipping all permission prompts.
+	ResumeBypass
+)
+
+// Label is a short human name for the mode, shown in the UI.
+func (m ResumeMode) Label() string {
+	switch m {
+	case ResumeBypass:
+		return "bypass permissions"
+	default:
+		return "normal"
+	}
+}
+
+// ResumeCommand returns the shell command to resume this session in the
+// given mode.
+func (s Session) ResumeCommand(mode ResumeMode) string {
+	switch mode {
+	case ResumeBypass:
+		return fmt.Sprintf("claude --resume %s --dangerously-skip-permissions", s.ID)
+	default:
+		return fmt.Sprintf("claude --resume %s", s.ID)
+	}
 }
 
 // ---------- Project (a folder that has Claude sessions) ----------

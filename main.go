@@ -79,6 +79,7 @@ type model struct {
 
 	curProject Project
 	curSession Session
+	resumeMode ResumeMode
 }
 
 func newModel() model {
@@ -285,6 +286,9 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			case "q", "esc":
 				m.state = viewProjects
 				return m, nil
+			case "m":
+				m.resumeMode = toggleMode(m.resumeMode)
+				return m, nil
 			case "enter":
 				if it, ok := m.sessList.SelectedItem().(sessItem); ok {
 					m.curSession = it.s
@@ -300,6 +304,9 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "q", "esc":
 			m.state = viewSessions
+			return m, nil
+		case "m":
+			m.resumeMode = toggleMode(m.resumeMode)
 			return m, nil
 		}
 		var cmd tea.Cmd
@@ -381,9 +388,9 @@ func (m model) viewSessionsRender() string {
 	body := m.sessList.View()
 	var footer string
 	if it, ok := m.sessList.SelectedItem().(sessItem); ok {
-		resume := resumeStyle.Render("resume:  " + it.s.ResumeCommand())
+		resume := resumeStyle.Render("resume:  " + it.s.ResumeCommand(m.resumeMode))
 		cwd := dimStyle.Render("run from: " + orDash(it.s.Cwd))
-		help := footerStyle.Render("enter view convo · / filter · esc back · q back")
+		help := footerStyle.Render(fmt.Sprintf("enter view · / filter · m mode [%s] · esc back", m.resumeMode.Label()))
 		footer = resume + "\n" + cwd + "\n" + help
 	} else {
 		footer = footerStyle.Render("no session selected · esc back")
@@ -397,9 +404,17 @@ func (m model) viewSessionsRender() string {
 func (m model) viewConversationRender() string {
 	header := titleStyle.Render(fmt.Sprintf("%s  ·  %s", short(m.curSession.ID), oneLine(m.curSession.Title, 60)))
 	scrollPct := fmt.Sprintf("%3.0f%%", m.convVP.ScrollPercent()*100)
-	footer := footerStyle.Render(fmt.Sprintf("↑/↓/pgup/pgdn scroll · %s · esc back · q back    resume: %s",
-		scrollPct, m.curSession.ResumeCommand()))
+	footer := footerStyle.Render(fmt.Sprintf("↑/↓/pgup/pgdn scroll · %s · m mode [%s] · esc back    resume: %s",
+		scrollPct, m.resumeMode.Label(), m.curSession.ResumeCommand(m.resumeMode)))
 	return header + "\n" + m.convVP.View() + "\n" + footer
+}
+
+// toggleMode flips between the two resume modes.
+func toggleMode(m ResumeMode) ResumeMode {
+	if m == ResumeNormal {
+		return ResumeBypass
+	}
+	return ResumeNormal
 }
 
 func orDash(s string) string {
