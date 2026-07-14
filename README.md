@@ -27,7 +27,7 @@ This tool solves all of that: point it at a folder, see every session with its f
    - the first prompt (used as a title)
    - message count, last-used time, and file size
    - the exact **resume command** and the directory to run it from
-3. **Read the full conversation** — press `enter` on a session to scroll its entire transcript: your prompts, Claude's replies, thinking, tool calls, and tool results.
+3. **Read the full conversation** — press `enter` on a session to scroll its entire transcript (in true chronological order): your prompts, Claude's replies, thinking, tool calls, and tool results. The prompt you're currently reading under stays pinned at the top as you scroll, and `g`/`G` jump to the top/bottom.
 4. **Choose a resume mode** — press `m` to cycle the shown resume command through every Claude Code permission mode (see below).
 
 Everything is **read-only**. The app runs no `claude` commands and touches none of your session files — it only displays the command for *you* to run.
@@ -60,7 +60,7 @@ Or use the helper script (builds, then runs):
 | Projects      | `↑/↓` move · `/` filter · `enter` open · `p` paste path · `q` quit   |
 | Paste path    | type/paste a path · `enter` resolve · `esc` back                     |
 | Sessions      | `↑/↓` move · `/` filter · `enter` view · `m` cycle resume mode · `esc`/`q` back |
-| Conversation  | `↑/↓ pgup/pgdn` scroll · `m` cycle resume mode · `esc`/`q` back      |
+| Conversation  | `↑/↓ pgup/pgdn` scroll · `g`/`home` top · `G`/`end` bottom · `m` cycle resume mode · `esc`/`q` back |
 
 `ctrl+c` quits from anywhere.
 

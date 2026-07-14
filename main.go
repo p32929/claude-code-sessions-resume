@@ -39,6 +39,7 @@ var (
 	errTurnStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("203"))
 	spinnerStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("81"))
 	loadStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("81")).Bold(true).Padding(0, 1)
+	stickyStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Background(lipgloss.Color("236")).Bold(true)
 )
 
 // ---------- list items ----------
@@ -84,9 +85,17 @@ type model struct {
 	loading  bool
 	loadWhat string
 
-	curProject Project
-	curSession Session
-	resumeMode int // index into ResumeModes
+	curProject  Project
+	curSession  Session
+	resumeMode  int          // index into ResumeModes
+	convAnchors []userAnchor // where each "You" prompt sits in the transcript
+}
+
+// userAnchor records the line at which a user prompt starts in the rendered
+// transcript, plus a one-line summary used for the sticky header.
+type userAnchor struct {
+	line int
+	text string
 }
 
 func newModel() model {
@@ -251,7 +260,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = msg.err.Error()
 			return m, nil
 		}
-		m.convVP.SetContent(renderConversation(msg.turns, m.width))
+		body, anchors := renderConversation(msg.turns, m.width)
+		m.convVP.SetContent(body)
+		m.convAnchors = anchors
 		m.convVP.GotoTop()
 		m.state = viewConversation
 		return m, nil
@@ -339,6 +350,12 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.resumeMode = cycleMode(m.resumeMode)
 			saveResumeModeIndex(m.resumeMode)
 			return m, nil
+		case "g", "home":
+			m.convVP.GotoTop()
+			return m, nil
+		case "G", "end":
+			m.convVP.GotoBottom()
+			return m, nil
 		}
 		var cmd tea.Cmd
 		m.convVP, cmd = m.convVP.Update(msg)
@@ -375,7 +392,8 @@ func (m *model) layout() {
 	// Sessions view reserves 3 footer lines for the resume command.
 	m.sessList.SetSize(m.width, m.height-4)
 	m.convVP.Width = m.width
-	m.convVP.Height = m.height - 3
+	// Reserve rows for: title, sticky prompt header, footer.
+	m.convVP.Height = m.height - 4
 }
 
 // ---------- view ----------
@@ -449,11 +467,37 @@ func (m model) viewSessionsRender() string {
 
 func (m model) viewConversationRender() string {
 	header := titleStyle.Render(fmt.Sprintf("%s  ·  %s", short(m.curSession.ID), oneLine(m.curSession.Title, 60)))
+	sticky := m.stickyHeader()
 	mode := ResumeModes[m.resumeMode]
 	scrollPct := fmt.Sprintf("%3.0f%%", m.convVP.ScrollPercent()*100)
-	footer := footerStyle.Render(fmt.Sprintf("↑/↓/pgup/pgdn scroll · %s · m mode [%s] · esc back    resume: %s",
+	footer := footerStyle.Render(fmt.Sprintf("↑/↓/pgup/pgdn scroll · g/G top/bottom · %s · m mode [%s] · esc back    resume: %s",
 		scrollPct, mode.Name, m.curSession.ResumeCommand(mode)))
-	return header + "\n" + m.convVP.View() + "\n" + footer
+	return header + "\n" + sticky + "\n" + m.convVP.View() + "\n" + footer
+}
+
+// stickyHeader renders the user prompt that the current scroll position sits
+// under, pinned above the transcript so you always know which turn you're in.
+func (m model) stickyHeader() string {
+	w := m.width
+	if w <= 0 {
+		w = 80
+	}
+	label := "▶ You"
+	if len(m.convAnchors) > 0 {
+		off := m.convVP.YOffset
+		cur := m.convAnchors[0]
+		for _, a := range m.convAnchors {
+			if a.line <= off {
+				cur = a
+			} else {
+				break
+			}
+		}
+		if cur.text != "" {
+			label = "▶ You: " + cur.text
+		}
+	}
+	return stickyStyle.Width(w).Render(oneLine(label, w-1))
 }
 
 // cycleMode advances to the next resume mode, wrapping around.
@@ -479,7 +523,7 @@ func orDash(s string) string {
 
 // ---------- conversation rendering ----------
 
-func renderConversation(turns []Turn, width int) string {
+func renderConversation(turns []Turn, width int) (string, []userAnchor) {
 	if width <= 0 {
 		width = 80
 	}
@@ -488,21 +532,30 @@ func renderConversation(turns []Turn, width int) string {
 		wrap = 20
 	}
 	var b strings.Builder
+	var anchors []userAnchor
+	lineCount := 0
+	// write appends text and keeps a running count of the lines emitted so far,
+	// so anchors can point at the exact line a prompt begins on.
+	write := func(s string) {
+		b.WriteString(s)
+		lineCount += strings.Count(s, "\n")
+	}
 	for _, t := range turns {
 		switch t.Kind {
 		case "text":
 			if t.Role == "user" {
-				b.WriteString(userStyle.Render("▶ You") + "\n")
+				anchors = append(anchors, userAnchor{line: lineCount, text: oneLine(t.Text, 100)})
+				write(userStyle.Render("▶ You") + "\n")
 			} else {
-				b.WriteString(claudeStyle.Render("● Claude") + "\n")
+				write(claudeStyle.Render("● Claude") + "\n")
 			}
-			b.WriteString(wrapText(t.Text, wrap) + "\n\n")
+			write(wrapText(t.Text, wrap) + "\n\n")
 		case "thinking":
-			b.WriteString(thinkStyle.Render("· thinking") + "\n")
-			b.WriteString(thinkStyle.Render(wrapText(t.Text, wrap)) + "\n\n")
+			write(thinkStyle.Render("· thinking") + "\n")
+			write(thinkStyle.Render(wrapText(t.Text, wrap)) + "\n\n")
 		case "tool_use":
 			line := fmt.Sprintf("⚙ %s(%s)", t.Name, oneLine(t.Text, wrap-len(t.Name)-4))
-			b.WriteString(toolStyle.Render(wrapText(line, wrap)) + "\n\n")
+			write(toolStyle.Render(wrapText(line, wrap)) + "\n\n")
 		case "tool_result":
 			style := dimStyle
 			label := "⤷ result"
@@ -510,14 +563,14 @@ func renderConversation(turns []Turn, width int) string {
 				style = errTurnStyle
 				label = "⤷ error"
 			}
-			b.WriteString(style.Render(label) + "\n")
-			b.WriteString(style.Render(wrapText(oneLineBudget(t.Text, wrap, 12), wrap)) + "\n\n")
+			write(style.Render(label) + "\n")
+			write(style.Render(wrapText(oneLineBudget(t.Text, wrap, 12), wrap)) + "\n\n")
 		}
 	}
 	if b.Len() == 0 {
-		return dimStyle.Render("  (no displayable messages in this session)")
+		return dimStyle.Render("  (no displayable messages in this session)"), nil
 	}
-	return b.String()
+	return b.String(), anchors
 }
 
 // oneLineBudget caps a tool result to at most `maxLines` wrapped-ish lines.

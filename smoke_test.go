@@ -41,9 +41,16 @@ func TestListAndParseRealData(t *testing.T) {
 		t.Fatalf("LoadConversation: %v", err)
 	}
 	t.Logf("conversation has %d turns", len(turns))
-	out := renderConversation(turns, 80)
+	out, anchors := renderConversation(turns, 80)
 	if len(out) == 0 {
 		t.Error("empty render")
+	}
+	t.Logf("render has %d user-prompt anchors", len(anchors))
+	// Turns must be ordered chronologically.
+	for i := 1; i < len(turns); i++ {
+		if turns[i].Time.Before(turns[i-1].Time) {
+			t.Errorf("turns out of order at %d: %v before %v", i, turns[i].Time, turns[i-1].Time)
+		}
 	}
 }
 

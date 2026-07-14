@@ -376,6 +376,7 @@ func LoadConversation(path string) ([]Turn, error) {
 	defer f.Close()
 
 	var turns []Turn
+	var lastTS time.Time
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 1024*1024), 32*1024*1024)
 	for sc.Scan() {
@@ -387,6 +388,13 @@ func LoadConversation(path string) ([]Turn, error) {
 			continue
 		}
 		ts := parseTime(l.Timestamp)
+		// Some lines carry no timestamp; inherit the previous one so a turn
+		// never sorts to the very top just because its time is zero.
+		if ts.IsZero() {
+			ts = lastTS
+		} else {
+			lastTS = ts
+		}
 		role := l.Message.Role
 		if role == "" {
 			role = l.Type
@@ -417,6 +425,13 @@ func LoadConversation(path string) ([]Turn, error) {
 			}
 		}
 	}
+	// Order the whole conversation by time. A stable sort preserves the
+	// original block order for turns that share a timestamp (e.g. a thinking
+	// block, its text, and the tool calls that came out of the same message),
+	// while fixing any lines that were written out of order.
+	sort.SliceStable(turns, func(i, j int) bool {
+		return turns[i].Time.Before(turns[j].Time)
+	})
 	return turns, sc.Err()
 }
 
