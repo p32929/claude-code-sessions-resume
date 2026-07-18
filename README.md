@@ -27,7 +27,8 @@ This tool solves all of that: point it at a folder, see every session with its f
    - the first prompt (used as a title)
    - message count, last-used time, and file size
    - the exact **resume command** and the directory to run it from
-3. **Read the full conversation** — press `enter` on a session to scroll its entire transcript (in true chronological order): your prompts, Claude's replies, thinking, tool calls, and tool results. The prompt you're currently reading under stays pinned at the top as you scroll, and `g`/`G` jump to the top/bottom.
+   - press `s` to re-sort by recent / message count / size / title, and `c` to copy the resume command straight to your clipboard.
+3. **Read the full conversation** — press `enter` on a session to scroll its entire transcript (in true chronological order): your prompts, Claude's replies, thinking, tool calls, and tool results. The prompt you're currently reading under stays pinned at the top as you scroll. You can `g`/`G` jump to top/bottom, `[`/`]` hop between your prompts, and `/` to search the transcript (`n`/`N` step through matches).
 4. **Choose a resume mode** — press `m` to cycle the shown resume command through every Claude Code permission mode (see below).
 
 Everything is **read-only**. The app runs no `claude` commands and touches none of your session files — it only displays the command for *you* to run.
@@ -59,10 +60,10 @@ Or use the helper script (builds, then runs):
 |---------------|---------------------------------------------------------------------|
 | Projects      | `↑/↓` move · `/` filter · `enter` open · `p` paste path · `q` quit   |
 | Paste path    | type/paste a path · `enter` resolve · `esc` back                     |
-| Sessions      | `↑/↓` move · `/` filter · `enter` view · `m` cycle resume mode · `esc`/`q` back |
-| Conversation  | `↑/↓ pgup/pgdn` scroll · `g`/`home` top · `G`/`end` bottom · `m` cycle resume mode · `esc`/`q` back |
+| Sessions      | `↑/↓` move · `/` filter · `enter` view · `c` copy command · `m` cycle mode · `s` cycle sort · `esc`/`q` back |
+| Conversation  | `↑/↓ pgup/pgdn` scroll · `g`/`G` top/bottom · `[`/`]` prev/next prompt · `/` search · `n`/`N` next/prev match · `c` copy command · `m` cycle mode · `esc`/`q` back |
 
-`ctrl+c` quits from anywhere.
+All keybindings are always shown in the footer of each screen. `ctrl+c` quits from anywhere.
 
 ---
 
@@ -81,7 +82,9 @@ Press `m` on the sessions or conversation screen to cycle the resume command thr
 
 > **Note:** the mode is a display setting only — the app never runs anything. Copy the command it shows and run it yourself.
 
-Your selected mode is **remembered between runs** (saved to `ccsessions/config.json` in your OS config dir, e.g. `~/.config/ccsessions/` on Linux or `~/Library/Application Support/ccsessions/` on macOS), so you don't have to re-pick it every time.
+Your selected mode **and sort order** are **remembered between runs** (saved to `ccsessions/config.json` in your OS config dir, e.g. `~/.config/ccsessions/` on Linux or `~/Library/Application Support/ccsessions/` on macOS), so you don't have to re-pick them every time.
+
+Press `c` on the sessions or conversation screen to copy the resume command to your clipboard. The copied command is prefixed with `cd <working-dir> && …` so it works no matter where you paste it.
 
 Run the resume command **from the session's original working directory** (shown in the `run from:` line), since `claude --resume` is directory-scoped.
 

@@ -16,17 +16,17 @@ import (
 // rawLine is a permissive view of one line in a session .jsonl file.
 // Claude Code writes many event types; we only decode the fields we need.
 type rawLine struct {
-	Type         string          `json:"type"`
-	Message      *rawMessage     `json:"message"`
-	Timestamp    string          `json:"timestamp"`
-	Cwd          string          `json:"cwd"`
-	SessionID    string          `json:"sessionId"`
-	GitBranch    string          `json:"gitBranch"`
-	Version      string          `json:"version"`
-	IsSidechain  bool            `json:"isSidechain"`
-	Origin       *originInfo     `json:"origin"`
-	PromptSource string          `json:"promptSource"`
-	Summary      string          `json:"summary"` // present on {"type":"summary"} lines
+	Type         string      `json:"type"`
+	Message      *rawMessage `json:"message"`
+	Timestamp    string      `json:"timestamp"`
+	Cwd          string      `json:"cwd"`
+	SessionID    string      `json:"sessionId"`
+	GitBranch    string      `json:"gitBranch"`
+	Version      string      `json:"version"`
+	IsSidechain  bool        `json:"isSidechain"`
+	Origin       *originInfo `json:"origin"`
+	PromptSource string      `json:"promptSource"`
+	Summary      string      `json:"summary"` // present on {"type":"summary"} lines
 }
 
 type originInfo struct {
@@ -34,21 +34,21 @@ type originInfo struct {
 }
 
 type rawMessage struct {
-	Role  string          `json:"role"`
-	Model string          `json:"model"`
+	Role  string `json:"role"`
+	Model string `json:"model"`
 	// Content is either a JSON string or an array of content blocks.
 	Content json.RawMessage `json:"content"`
 }
 
 type contentBlock struct {
-	Type    string          `json:"type"`
-	Text    string          `json:"text"`
-	Thinking string         `json:"thinking"`
-	Name    string          `json:"name"`  // tool_use
-	Input   json.RawMessage `json:"input"` // tool_use
-	Content json.RawMessage `json:"content"` // tool_result (string or array)
-	ToolUseID string        `json:"tool_use_id"`
-	IsError bool            `json:"is_error"`
+	Type      string          `json:"type"`
+	Text      string          `json:"text"`
+	Thinking  string          `json:"thinking"`
+	Name      string          `json:"name"`    // tool_use
+	Input     json.RawMessage `json:"input"`   // tool_use
+	Content   json.RawMessage `json:"content"` // tool_result (string or array)
+	ToolUseID string          `json:"tool_use_id"`
+	IsError   bool            `json:"is_error"`
 }
 
 // ---------- Session metadata ----------
@@ -92,6 +92,49 @@ func (s Session) ResumeCommand(mode ResumeMode) string {
 		return fmt.Sprintf("claude --resume %s", s.ID)
 	}
 	return fmt.Sprintf("claude --resume %s %s", s.ID, mode.Flag)
+}
+
+// ResumeCommandCd returns a copy-ready command that first cd's into the
+// session's working directory (resume looks sessions up in the current
+// project's dir, so the cwd matters). Falls back to the bare command when the
+// cwd is unknown.
+func (s Session) ResumeCommandCd(mode ResumeMode) string {
+	cmd := s.ResumeCommand(mode)
+	if s.Cwd == "" {
+		return cmd
+	}
+	return fmt.Sprintf("cd %s && %s", shellQuote(s.Cwd), cmd)
+}
+
+// shellQuote single-quotes a path for safe pasting into a POSIX shell.
+func shellQuote(s string) string {
+	if !strings.ContainsAny(s, " \t'\"\\$`*?()[]{}&;|<>#~") {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// sortMode describes one way to order the session list.
+type sortMode struct {
+	Name string
+	Less func(a, b Session) bool
+}
+
+// sortModes lists every ordering the user can cycle through with the sort key.
+var sortModes = []sortMode{
+	{"recent", func(a, b Session) bool { return a.End.After(b.End) }},
+	{"messages", func(a, b Session) bool { return a.MsgCount > b.MsgCount }},
+	{"size", func(a, b Session) bool { return a.SizeBytes > b.SizeBytes }},
+	{"title", func(a, b Session) bool { return strings.ToLower(a.Title) < strings.ToLower(b.Title) }},
+}
+
+// sortSessions orders sessions in place by the given sort-mode index.
+func sortSessions(ss []Session, mode int) {
+	if mode < 0 || mode >= len(sortModes) {
+		mode = 0
+	}
+	less := sortModes[mode].Less
+	sort.SliceStable(ss, func(i, j int) bool { return less(ss[i], ss[j]) })
 }
 
 // ---------- Project (a folder that has Claude sessions) ----------
