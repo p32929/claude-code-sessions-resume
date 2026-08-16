@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/atotto/clipboard"
@@ -34,6 +35,10 @@ const (
 
 // ---------- styles ----------
 
+// Chrome is indented one column on every screen so the left edge lines up from
+// header to footer.
+var pad = lipgloss.NewStyle().Padding(0, 1)
+
 var (
 	titleStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("81")).Padding(0, 1)
 	footerStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Padding(0, 1)
@@ -49,7 +54,20 @@ var (
 	loadStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("81")).Bold(true).Padding(0, 1)
 	stickyStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Background(lipgloss.Color("236")).Bold(true)
 	statusStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Bold(true).Padding(0, 1)
+
+	// Status rows stay in the footer grey; the value of a setting is picked out
+	// with weight rather than another colour, so the palette doesn't grow.
+	labelStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
+	valueStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Bold(true)
 )
+
+// sep joins the fields of a status row.
+var sep = dimStyle.Render(" · ")
+
+// field renders one "label value" pair for a status row.
+func field(name, val string) string {
+	return labelStyle.Render(name+": ") + valueStyle.Render(val)
+}
 
 // ---------- list items ----------
 
@@ -57,7 +75,7 @@ type projItem struct{ p Project }
 
 func (i projItem) Title() string { return i.p.RealPath }
 func (i projItem) Description() string {
-	return fmt.Sprintf("%d session(s) · last used %s", i.p.NumSess, relTime(i.p.LastUsed))
+	return fmt.Sprintf("%s · last used %s", plural(i.p.NumSess, "session"), relTime(i.p.LastUsed))
 }
 func (i projItem) FilterValue() string { return i.p.RealPath }
 
@@ -119,6 +137,19 @@ type userAnchor struct {
 	text string
 }
 
+// newList builds a list that keeps its stock appearance — the default delegate
+// and title styling are better tuned than anything hand-rolled here. Only the
+// chrome this app draws itself is switched off: the status bar (its item count
+// lives in the status row) and the help line (the footer lists the keys).
+func newList(title string) list.Model {
+	l := list.New(nil, list.NewDefaultDelegate(), 0, 0)
+	l.Title = title
+	l.SetFilteringEnabled(true)
+	l.SetShowStatusBar(false)
+	l.SetShowHelp(false)
+	return l
+}
+
 func newModel() model {
 	pi := textinput.New()
 	pi.Placeholder = "/Users/you/path/to/project"
@@ -126,17 +157,8 @@ func newModel() model {
 	pi.CharLimit = 4096
 	pi.Width = 60
 
-	projDelegate := list.NewDefaultDelegate()
-	pl := list.New(nil, projDelegate, 0, 0)
-	pl.Title = "Claude Code Projects"
-	pl.SetShowStatusBar(true)
-	pl.SetFilteringEnabled(true)
-
-	sessDelegate := list.NewDefaultDelegate()
-	sl := list.New(nil, sessDelegate, 0, 0)
-	sl.Title = "Sessions"
-	sl.SetShowStatusBar(true)
-	sl.SetFilteringEnabled(true)
+	pl := newList("Claude Code Projects")
+	sl := newList("Sessions")
 
 	si := textinput.New()
 	si.Placeholder = "search…"
@@ -281,7 +303,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.curProject = msg.project
 		m.curSessions = msg.sessions
 		m.applySessionSort()
-		m.sessList.Title = "Sessions · " + msg.project.RealPath
 		m.sessList.ResetSelected()
 		m.state = viewSessions
 		m.layout()
@@ -360,7 +381,9 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case viewSessions:
 		if m.sessList.FilterState().String() != "filtering" {
 			switch msg.String() {
-			case "q", "esc":
+			case "q":
+				return m, tea.Quit
+			case "esc":
 				m.state = viewProjects
 				return m, nil
 			case "m":
@@ -373,7 +396,7 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				saveSortMode(m.sortMode)
 				m.applySessionSort()
 				m.sessList.ResetSelected()
-				m.status = ""
+				m.status = "sorted by " + sortModes[m.sortMode].Name
 				return m, nil
 			case "c":
 				m.status = m.copyResume()
@@ -412,7 +435,9 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 		switch msg.String() {
-		case "q", "esc":
+		case "q":
+			return m, tea.Quit
+		case "esc":
 			m.state = viewSessions
 			return m, nil
 		case "m":
@@ -483,21 +508,26 @@ func (m *model) layout() {
 	if m.width == 0 {
 		return
 	}
-	listH := m.height - 2
-	if listH < 3 {
-		listH = 3
-	}
-	m.projList.SetSize(m.width, listH)
-	// Sessions view reserves 4 footer lines (resume, cwd, mode+sort, keys).
-	m.sessList.SetSize(m.width, m.height-5)
+	// Rows each screen spends on chrome below its body:
+	//   projects      state + keys                              = 2
+	//   sessions      state + command(2) + keys                 = 4
+	//   conversation  header + sticky above; state + command(2) + keys below = 6
+	m.projList.SetSize(m.width, atLeast(m.height-2, 3))
+	m.sessList.SetSize(m.width, atLeast(m.height-4, 3))
 	m.convVP.Width = m.width
-	// Reserve rows for: title, sticky prompt header, and a 2-line footer.
-	m.convVP.Height = m.height - 5
+	m.convVP.Height = atLeast(m.height-6, 3)
 }
 
 // ---------- view ----------
 
 func (m model) View() string {
+	// Everything gets clamped to the terminal width here, once. Individual rows
+	// don't have to be defensive about long paths, long commands or narrow
+	// windows, and nothing can wrap and push the layout down a line.
+	return m.clamp(m.screenBody())
+}
+
+func (m model) screenBody() string {
 	if m.loading {
 		return m.loaderView()
 	}
@@ -524,85 +554,145 @@ func (m model) loaderView() string {
 	return lipgloss.Place(w, h, lipgloss.Center, lipgloss.Center, content)
 }
 
+// Screens are stacked the same way everywhere, so your eye learns one shape:
+//
+//	body    the list or transcript
+//	state   what's currently set (sort / filter / search) — always present
+//	detail  the resume command, on screens where one applies
+//	keys    what you can press
 func (m model) viewProjectsRender() string {
-	body := m.projList.View()
-	footer := footerStyle.Render("↑/↓ move · / filter · enter open · p paste path · q quit")
-	if m.err != "" {
-		footer = errStyle.Render(m.err)
+	return m.screen(
+		m.projList.View(),
+		m.statusLine(filterStatus(m.projList, "project")),
+		"",
+		m.fitKeys("↑/↓ move · enter open · / filter · p paste path · q quit",
+			"↑/↓ move · enter open · / filter · q quit"),
+	)
+}
+
+// screen assembles the standard stack. Empty sections are skipped, and the
+// error (if any) replaces the keys line so it can't be missed.
+func (m model) screen(body, state, detail, keys string) string {
+	out := body
+	for _, s := range []string{state, detail} {
+		if s != "" {
+			out += "\n" + s
+		}
 	}
-	return body + "\n" + footer
+	if m.err != "" {
+		return out + "\n" + errStyle.Render(oneLine(m.err, m.textWidth()))
+	}
+	return out + "\n" + footerStyle.Render(keys)
+}
+
+// fitKeys picks the fullest key hint that fits, so the footer never ends in a
+// word chopped in half. Pass them longest first.
+func (m model) fitKeys(options ...string) string {
+	for _, o := range options {
+		if lipgloss.Width(o)+2 <= m.width {
+			return o
+		}
+	}
+	return options[len(options)-1]
+}
+
+// textWidth is the usable width inside the one-column chrome padding.
+func (m model) textWidth() int {
+	if m.width < 20 {
+		return 20
+	}
+	return m.width - 2
 }
 
 func (m model) viewPastePathRender() string {
 	var b strings.Builder
-	b.WriteString(titleStyle.Render("Paste or type a project folder path") + "\n\n")
-	b.WriteString(m.pathIn.View() + "\n\n")
-	b.WriteString(footerStyle.Render("enter resolve · esc back · ctrl+c quit") + "\n")
+	b.WriteString(titleStyle.Render("Open a project by path") + "\n\n")
+	b.WriteString(pad.Render(m.pathIn.View()) + "\n\n")
+	b.WriteString(dimStyle.Render(pad.Render("Looks the folder up in ~/.claude/projects/<encoded>")) + "\n")
 	if m.err != "" {
 		b.WriteString("\n" + errStyle.Render(m.err) + "\n")
 	}
-	b.WriteString("\n" + dimStyle.Render("Tip: this maps your folder to ~/.claude/projects/<encoded>"))
+	b.WriteString("\n" + footerStyle.Render("enter open · esc back · ctrl+c quit"))
 	return b.String()
 }
 
 func (m model) viewSessionsRender() string {
-	body := m.sessList.View()
-	var footer string
-	if it, ok := m.sessList.SelectedItem().(sessItem); ok {
-		mode := ResumeModes[m.resumeMode]
-		resume := resumeStyle.Render("resume:  " + it.s.ResumeCommand(mode))
-		cwd := dimStyle.Render("run from: " + orDash(it.s.Cwd))
-		modeLine := dimStyle.Render(fmt.Sprintf("mode: %s — %s     sort: %s", mode.Name, mode.Desc, sortModes[m.sortMode].Name))
-		last := footerStyle.Render("enter view · c copy cmd · m mode · s sort · / filter · esc back")
-		if m.status != "" {
-			last = statusStyle.Render(m.status)
-		}
-		footer = resume + "\n" + cwd + "\n" + modeLine + "\n" + last
-	} else {
-		footer = footerStyle.Render("no sessions · s sort · esc back")
+	m.sessList.Title = "Sessions in " + m.curProject.RealPath
+	it, ok := m.sessList.SelectedItem().(sessItem)
+	if !ok {
+		return m.screen(m.sessList.View(),
+			m.statusLine(field("sort", sortModes[m.sortMode].Name), filterStatus(m.sessList, "session")),
+			"", m.fitKeys("s sort · / filter · esc back · q quit", "esc back · q quit"))
 	}
-	if m.err != "" {
-		footer = errStyle.Render(m.err) + "\n" + footer
+	return m.screen(
+		m.sessList.View(),
+		m.statusLine(field("sort", sortModes[m.sortMode].Name), filterStatus(m.sessList, "session")),
+		m.commandBlock(it.s),
+		m.fitKeys("↑/↓ move · enter read · c copy · m mode · s sort · / filter · esc back · q quit",
+			"↑/↓ move · enter read · c copy · m mode · s sort · esc back · q quit",
+			"enter read · c copy · m mode · esc back · q quit"),
+	)
+}
+
+// commandBlock renders the resume command and, under it, what the active mode
+// does — or the transient status ("copied ✓") right where you just acted.
+// The mode is not spelled out anywhere else: the command itself carries the
+// flag, and this line explains it.
+func (m model) commandBlock(s Session) string {
+	mode := ResumeModes[m.resumeMode]
+	cmd := resumeStyle.Render("resume:  " + s.ResumeCommand(mode))
+	if m.status != "" {
+		return cmd + "\n" + statusStyle.Render(m.status)
 	}
-	return body + "\n" + footer
+	return cmd + "\n" + dimStyle.Render(pad.Render(fmt.Sprintf("mode: %s — %s", mode.Name, mode.Desc)))
+}
+
+// statusLine renders the always-on "what's set right now" row.
+func (m model) statusLine(fields ...string) string {
+	return pad.Render(strings.Join(fields, sep))
+}
+
+// clamp cuts a rendered line to the terminal width. It has to be ANSI-aware —
+// these lines are already styled, so counting raw bytes would slice an escape
+// sequence in half and bleed colour across the rest of the screen.
+func (m model) clamp(s string) string {
+	w := m.width
+	if w <= 0 {
+		w = 80
+	}
+	return lipgloss.NewStyle().MaxWidth(w).Render(s)
 }
 
 func (m model) viewConversationRender() string {
-	header := titleStyle.Render(fmt.Sprintf("%s  ·  %s", short(m.curSession.ID), oneLine(m.curSession.Title, 60)))
-	sticky := m.stickyHeader()
-	return header + "\n" + sticky + "\n" + m.convVP.View() + "\n" + m.convFooter()
+	// The header carries the session identity and how far down you are; the
+	// sticky row carries which prompt you're reading under.
+	head := titleStyle.Render(fmt.Sprintf("%s  ·  %s", short(m.curSession.ID),
+		oneLine(m.curSession.Title, atLeast(m.textWidth()-20, 8)))) +
+		dimStyle.Render(fmt.Sprintf("  %.0f%%", m.convVP.ScrollPercent()*100))
+
+	keys := m.fitKeys(
+		"↑/↓ scroll · [ ] prev/next prompt · / search · n/N matches · g/G top/bottom · c copy · m mode · esc back · q quit",
+		"↑/↓ scroll · [ ] prompt · / search · n/N match · g/G ends · c copy · m mode · esc back · q quit",
+		"↑/↓ scroll · / search · c copy · m mode · esc back · q quit",
+	)
+	if m.searching {
+		keys = "enter jump to first match · esc cancel"
+	}
+	return head + "\n" +
+		m.stickyHeader() + "\n" +
+		m.convVP.View() + "\n" +
+		m.statusLine(m.searchLine()) + "\n" +
+		m.commandBlock(m.curSession) + "\n" +
+		footerStyle.Render(keys)
 }
 
-// convFooter renders the two-line conversation footer: a search line and a
-// keybinding line (or a transient status in place of the keys).
-func (m model) convFooter() string {
-	mode := ResumeModes[m.resumeMode]
-	scrollPct := fmt.Sprintf("%3.0f%%", m.convVP.ScrollPercent()*100)
-
-	// Line 1: the search field while typing, otherwise navigation help + counter.
-	var line1 string
+// searchLine is the search field itself while you type, and the search state
+// otherwise — the same row either way, so the layout never shifts.
+func (m model) searchLine() string {
 	if m.searching {
-		line1 = footerStyle.Render(m.searchIn.View() + "   (enter jump · esc cancel)")
-	} else {
-		nav := "↑/↓/pgup/pgdn scroll · [ ] prev/next prompt · / search · n/N matches · g/G top/bottom"
-		if m.searchQ != "" {
-			if len(m.matches) == 0 {
-				nav += fmt.Sprintf("   no match for \"%s\"", m.searchQ)
-			} else {
-				nav += fmt.Sprintf("   match %d/%d for \"%s\"", m.matchIdx+1, len(m.matches), m.searchQ)
-			}
-		}
-		line1 = footerStyle.Render(nav)
+		return m.searchIn.View()
 	}
-
-	// Line 2: status (if any) else copy/mode/back keys.
-	var line2 string
-	if m.status != "" {
-		line2 = statusStyle.Render(m.status)
-	} else {
-		line2 = footerStyle.Render(fmt.Sprintf("c copy cmd · m mode [%s] · esc back · %s", mode.Name, scrollPct))
-	}
-	return line1 + "\n" + line2
+	return m.searchStatus()
 }
 
 // setConversationContent (re-)wraps the stored transcript to the current width
@@ -656,6 +746,55 @@ func (m model) stickyHeader() string {
 	return stickyStyle.Width(w).Render(oneLine(label, w-1))
 }
 
+// filterStatus describes a list's filter in every state, including the
+// unfiltered one, so the indicator never blinks out of existence. It also
+// carries the item count, which is why the list's own status bar is switched
+// off — that count used to appear twice, phrased two different ways.
+func filterStatus(l list.Model, noun string) string {
+	total := len(l.Items())
+	shown := len(l.VisibleItems())
+	switch l.FilterState() {
+	case list.Filtering:
+		return field("filter", quoteOr(l.FilterInput.Value(), "…")) +
+			sep + field("showing", fmt.Sprintf("%d of %d", shown, total))
+	case list.FilterApplied:
+		return field("filter", quoteOr(strings.TrimSpace(l.FilterInput.Value()), "—")) +
+			sep + field("showing", fmt.Sprintf("%d of %d", shown, total))
+	default:
+		return field("filter", "off") + sep + labelStyle.Render(plural(total, noun))
+	}
+}
+
+// searchStatus describes the conversation search in every state, mirroring
+// filterStatus so both screens read the same way.
+func (m model) searchStatus() string {
+	switch {
+	case m.searching:
+		return field("search", quoteOr(m.searchIn.Value(), "…"))
+	case m.searchQ == "":
+		return field("search", "off")
+	case len(m.matches) == 0:
+		return field("search", strconv.Quote(m.searchQ)) + sep + labelStyle.Render("no matches")
+	default:
+		return field("search", strconv.Quote(m.searchQ)) +
+			sep + field("match", fmt.Sprintf("%d of %d", m.matchIdx+1, len(m.matches)))
+	}
+}
+
+func quoteOr(s, empty string) string {
+	if s == "" {
+		return empty
+	}
+	return strconv.Quote(s)
+}
+
+func plural(n int, noun string) string {
+	if n == 1 {
+		return fmt.Sprintf("%d %s", n, noun)
+	}
+	return fmt.Sprintf("%d %ss", n, noun)
+}
+
 // cycleMode advances to the next resume mode, wrapping around.
 func cycleMode(i int) int {
 	return (i + 1) % len(ResumeModes)
@@ -679,7 +818,12 @@ func (m *model) copyResume() string {
 	if err := clipboard.WriteAll(cmd); err != nil {
 		return "copy failed: " + err.Error()
 	}
-	return "copied ✓  " + s.ResumeCommand(ResumeModes[m.resumeMode])
+	// The command itself is already on screen right above this line, so report
+	// only what the clipboard adds to it: the cd that makes it runnable anywhere.
+	if s.Cwd != "" {
+		return "copied ✓  prefixed with cd " + s.Cwd
+	}
+	return "copied ✓"
 }
 
 // applySessionSort re-orders the current project's sessions by the active sort
@@ -761,6 +905,15 @@ func (m *model) startLoad(what string, work tea.Cmd) tea.Cmd {
 	return tea.Batch(work, m.spin.Tick)
 }
 
+// atLeast clamps a computed pane height so a very short terminal can't produce
+// a zero or negative size.
+func atLeast(n, min int) int {
+	if n < min {
+		return min
+	}
+	return n
+}
+
 func orDash(s string) string {
 	if s == "" {
 		return "—"
@@ -791,7 +944,8 @@ func renderConversation(turns []Turn, width int) (string, []userAnchor) {
 		switch t.Kind {
 		case "text":
 			if t.Role == "user" {
-				anchors = append(anchors, userAnchor{line: lineCount, text: oneLine(t.Text, 100)})
+				// Kept long; the sticky header trims it to the terminal width.
+				anchors = append(anchors, userAnchor{line: lineCount, text: oneLine(t.Text, maxStoredTitle)})
 				write(userStyle.Render("▶ You") + "\n")
 			} else {
 				write(claudeStyle.Render("● Claude") + "\n")
@@ -815,9 +969,17 @@ func renderConversation(turns []Turn, width int) (string, []userAnchor) {
 		}
 	}
 	if b.Len() == 0 {
-		return dimStyle.Render("  (no displayable messages in this session)"), nil
+		return labelStyle.Render(" (no displayable messages in this session)"), nil
 	}
-	return b.String(), anchors
+	// Indent to the same column as the header, state and footer rows. Done after
+	// the fact so it can't disturb the line counts the anchors were built from.
+	return indent(b.String()), anchors
+}
+
+// indent shifts every line one column right. Safe on already-styled text: a
+// leading plain space can't land inside an escape sequence.
+func indent(s string) string {
+	return " " + strings.ReplaceAll(s, "\n", "\n ")
 }
 
 // oneLineBudget caps a tool result to at most `maxLines` wrapped-ish lines.

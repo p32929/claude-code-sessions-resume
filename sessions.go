@@ -361,8 +361,14 @@ func firstPromptText(l rawLine) string {
 			return ""
 		}
 	}
-	return oneLine(text, 120)
+	return oneLine(text, maxStoredTitle)
 }
+
+// maxStoredTitle bounds how much of a prompt we keep as a session title. It is
+// a guard against a pathologically long prompt, not a display width — the list
+// truncates to the real terminal width at render time, so this has to stay
+// comfortably wider than any terminal or titles get clipped short of the edge.
+const maxStoredTitle = 1024
 
 // messageText flattens a message Content (string or block array) to plain text.
 func messageText(raw json.RawMessage) string {
@@ -542,12 +548,15 @@ func oneLine(s string, max int) string {
 }
 
 func truncate(s string, max int) string {
+	if max <= 0 {
+		return ""
+	}
 	r := []rune(s)
 	if len(r) <= max {
 		return s
 	}
-	if max <= 1 {
-		return string(r[:max])
+	if max == 1 {
+		return string(r[:1])
 	}
 	return string(r[:max-1]) + "…"
 }

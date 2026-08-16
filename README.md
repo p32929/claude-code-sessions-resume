@@ -28,7 +28,30 @@ This tool solves all of that: point it at a folder, see every session with its f
    - message count, last-used time, and file size
    - the exact **resume command** and the directory to run it from
    - press `s` to re-sort by recent / message count / size / title, and `c` to copy the resume command straight to your clipboard.
-3. **Read the full conversation** — press `enter` on a session to scroll its entire transcript (in true chronological order): your prompts, Claude's replies, thinking, tool calls, and tool results. The prompt you're currently reading under stays pinned at the top as you scroll. You can `g`/`G` jump to top/bottom, `[`/`]` hop between your prompts, and `/` to search the transcript (`n`/`N` step through matches).
+
+### Screen layout
+
+Every screen is stacked the same way, so there's one shape to learn:
+
+```
+   Sessions in /Users/mac/dev/claude-sessions-tui        ← where you are
+
+ │ add loading spinner and all resume modes              ← the list, or the transcript
+ │ 0f8e2a91 · 185 msgs · 4h ago · 444.3KB
+
+   remember the last selected resume mode across runs
+   0f8e2a91 · 148 msgs · 3h ago · 355.5KB
+
+ sort: messages · filter: off · 5 sessions               ← what's set right now
+ resume:  claude --resume 0f8e2a91-… --permission-mode plan
+ mode: plan — read-only; plans before making changes
+ ↑/↓ move · enter read · c copy · m mode · s sort · / filter · esc back
+```
+
+The **status row** is always present, including when nothing is set (`filter: off`, `search: off`), so it never blinks in and out and never has to be guessed at. It survives filtering too — the sort stays readable while you're typing, which is exactly when the list is shifting under you.
+
+Each fact appears once: the item count sits with the filter that changes it, the permission mode is explained under the command that carries it, and the key hints appear only in the footer. The footer shortens itself on a narrow terminal rather than truncating mid-word.
+3. **Read the full conversation** — press `enter` on a session to scroll its entire transcript (in true chronological order): your prompts, Claude's replies, thinking, tool calls, and tool results. The prompt you're currently reading under stays pinned at the top as you scroll. You can `g`/`G` jump to top/bottom, `[`/`]` hop between your prompts, and `/` to search the transcript (`n`/`N` step through matches). The resume command and its `run from:` directory stay visible in the footer here too, so you can read a session and copy its command without backing out to the list.
 4. **Choose a resume mode** — press `m` to cycle the shown resume command through every Claude Code permission mode (see below).
 
 Everything is **read-only**. The app runs no `claude` commands and touches none of your session files — it only displays the command for *you* to run.
@@ -60,10 +83,12 @@ Or use the helper script (builds, then runs):
 |---------------|---------------------------------------------------------------------|
 | Projects      | `↑/↓` move · `/` filter · `enter` open · `p` paste path · `q` quit   |
 | Paste path    | type/paste a path · `enter` resolve · `esc` back                     |
-| Sessions      | `↑/↓` move · `/` filter · `enter` view · `c` copy command · `m` cycle mode · `s` cycle sort · `esc`/`q` back |
-| Conversation  | `↑/↓ pgup/pgdn` scroll · `g`/`G` top/bottom · `[`/`]` prev/next prompt · `/` search · `n`/`N` next/prev match · `c` copy command · `m` cycle mode · `esc`/`q` back |
+| Sessions      | `↑/↓` move · `/` filter · `enter` view · `c` copy command · `m` cycle mode · `s` cycle sort · `esc` back · `q` quit |
+| Conversation  | `↑/↓ pgup/pgdn` scroll · `g`/`G` top/bottom · `[`/`]` prev/next prompt · `/` search · `n`/`N` next/prev match · `c` copy command · `m` cycle mode · `esc` back · `q` quit |
 
-All keybindings are always shown in the footer of each screen. `ctrl+c` quits from anywhere.
+All keybindings are always shown in the footer of each screen.
+
+**`q` quits the app from any screen**, however deep you are — `esc` is the one that steps back a screen. Both `ctrl+c` and `q` exit from anywhere. While you're typing (a filter, a transcript search, or a path) `q` is just a letter; press `esc` first to leave the input.
 
 ---
 
