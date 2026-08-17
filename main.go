@@ -75,7 +75,8 @@ type projItem struct{ p Project }
 
 func (i projItem) Title() string { return i.p.RealPath }
 func (i projItem) Description() string {
-	return fmt.Sprintf("%s · last used %s", plural(i.p.NumSess, "session"), relTime(i.p.LastUsed))
+	return fmt.Sprintf("%s · %s · last used %s",
+		plural(i.p.NumSess, "session"), humanSize(i.p.SizeBytes), relTime(i.p.LastUsed))
 }
 func (i projItem) FilterValue() string { return i.p.RealPath }
 
@@ -114,20 +115,34 @@ type model struct {
 	loadWhat string
 	status   string // transient one-line feedback (e.g. "copied ✓")
 
+	curProjects []Project // raw projects, kept so we can re-sort
 	curProject  Project
 	curSession  Session
 	curSessions []Session    // raw sessions for the current project, kept so we can re-sort
 	resumeMode  int          // index into ResumeModes
 	sortMode    int          // index into sortModes
+	projSort    int          // index into projectSortModes
 	curTurns    []Turn       // parsed transcript, kept so we can re-wrap on resize
 	convAnchors []userAnchor // where each "You" prompt sits in the transcript
 	convWidth   int          // width the transcript was last wrapped to
 	convPlain   []string     // lowercased plain text per rendered line, for search
 
+	// pending is the delete the user has asked for but not yet confirmed. While
+	// it is set, every key goes to the confirmation prompt.
+	pending *deleteTarget
+
 	searching bool   // conversation search input is focused
 	searchQ   string // active search query
 	matches   []int  // rendered line indices that contain the query
 	matchIdx  int    // which match we're currently parked on
+}
+
+// deleteTarget is what a confirmed delete will remove: either one session, or
+// every session in a project.
+type deleteTarget struct {
+	isProject bool
+	session   Session
+	project   Project
 }
 
 // userAnchor records the line at which a user prompt starts in the rendered
@@ -182,6 +197,7 @@ func newModel() model {
 		loadWhat:   "Loading projects",
 		resumeMode: loadResumeModeIndex(),
 		sortMode:   loadSortMode(),
+		projSort:   loadProjectSort(),
 	}
 	return m
 }
@@ -242,6 +258,7 @@ func resolvePathCmd(raw string) tea.Cmd {
 		proj := Project{EncodedDir: dir, RealPath: p}
 		ss, err := LoadSessions(dir)
 		proj.NumSess = len(ss)
+		proj.SizeBytes = TotalSize(ss)
 		return sessionsLoadedMsg{project: proj, sessions: ss, err: err}
 	}
 }
@@ -284,11 +301,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = msg.err.Error()
 			return m, nil
 		}
-		items := make([]list.Item, len(msg.projects))
-		for i, p := range msg.projects {
-			items[i] = projItem{p}
-		}
-		m.projList.SetItems(items)
+		m.curProjects = msg.projects
+		m.applyProjectSort()
 		return m, nil
 
 	case sessionsLoadedMsg:
@@ -339,6 +353,18 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	}
 
+	// A pending delete swallows every other key. Only an explicit "y" goes
+	// through; anything else — including a stray arrow key — cancels, so it is
+	// never possible to destroy a transcript by mashing keys.
+	if m.pending != nil {
+		if msg.String() == "y" {
+			return m.performDelete()
+		}
+		m.pending = nil
+		m.status = "delete cancelled"
+		return m, nil
+	}
+
 	switch m.state {
 	case viewProjects:
 		if m.projList.FilterState().String() != "filtering" {
@@ -349,6 +375,19 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.state = viewPastePath
 				m.pathIn.Focus()
 				return m, textinput.Blink
+			case "s":
+				m.projSort = (m.projSort + 1) % len(projectSortModes)
+				saveProjectSort(m.projSort)
+				m.applyProjectSort()
+				m.projList.ResetSelected()
+				m.status = "sorted by " + projectSortModes[m.projSort].Name
+				return m, nil
+			case "d":
+				if it, ok := m.projList.SelectedItem().(projItem); ok {
+					m.pending = &deleteTarget{isProject: true, project: it.p}
+					m.status = ""
+				}
+				return m, nil
 			case "enter":
 				if it, ok := m.projList.SelectedItem().(projItem); ok {
 					cmd := m.startLoad("Loading sessions", loadSessionsCmd(it.p))
@@ -356,6 +395,8 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
+		// Any other key moves on, so the transient status gives the keys back.
+		m.status = ""
 		var cmd tea.Cmd
 		m.projList, cmd = m.projList.Update(msg)
 		return m, cmd
@@ -400,6 +441,12 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			case "c":
 				m.status = m.copyResume()
+				return m, nil
+			case "d":
+				if it, ok := m.sessList.SelectedItem().(sessItem); ok {
+					m.pending = &deleteTarget{session: it.s}
+					m.status = ""
+				}
 				return m, nil
 			case "enter":
 				if it, ok := m.sessList.SelectedItem().(sessItem); ok {
@@ -447,6 +494,10 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case "c":
 			m.status = m.copyResume()
+			return m, nil
+		case "d":
+			m.pending = &deleteTarget{session: m.curSession}
+			m.status = ""
 			return m, nil
 		case "/":
 			m.searching = true
@@ -563,10 +614,13 @@ func (m model) loaderView() string {
 func (m model) viewProjectsRender() string {
 	return m.screen(
 		m.projList.View(),
-		m.statusLine(filterStatus(m.projList, "project")),
+		m.statusLine(field("sort", projectSortModes[m.projSort].Name),
+			filterStatus(m.projList, "project"),
+			field("on disk", humanSize(TotalProjectSize(m.curProjects)))),
 		"",
-		m.fitKeys("↑/↓ move · enter open · / filter · p paste path · q quit",
-			"↑/↓ move · enter open · / filter · q quit"),
+		m.fitKeys("↑/↓ move · enter open · s sort · / filter · p paste path · d delete · q quit",
+			"↑/↓ move · enter open · s sort · / filter · d delete · q quit",
+			"enter open · s sort · d delete · q quit"),
 	)
 }
 
@@ -579,8 +633,16 @@ func (m model) screen(body, state, detail, keys string) string {
 			out += "\n" + s
 		}
 	}
+	if m.pending != nil {
+		return out + "\n" + m.confirmLine()
+	}
 	if m.err != "" {
 		return out + "\n" + errStyle.Render(oneLine(m.err, m.textWidth()))
+	}
+	// Screens with a command block show transient status there; the ones without
+	// (projects) put it in place of the keys, so feedback is never swallowed.
+	if detail == "" && m.status != "" {
+		return out + "\n" + statusStyle.Render(m.status)
 	}
 	return out + "\n" + footerStyle.Render(keys)
 }
@@ -621,16 +683,20 @@ func (m model) viewSessionsRender() string {
 	it, ok := m.sessList.SelectedItem().(sessItem)
 	if !ok {
 		return m.screen(m.sessList.View(),
-			m.statusLine(field("sort", sortModes[m.sortMode].Name), filterStatus(m.sessList, "session")),
+			m.statusLine(field("sort", sortModes[m.sortMode].Name),
+				filterStatus(m.sessList, "session"),
+				field("on disk", humanSize(TotalSize(m.curSessions)))),
 			"", m.fitKeys("s sort · / filter · esc back · q quit", "esc back · q quit"))
 	}
 	return m.screen(
 		m.sessList.View(),
-		m.statusLine(field("sort", sortModes[m.sortMode].Name), filterStatus(m.sessList, "session")),
+		m.statusLine(field("sort", sortModes[m.sortMode].Name),
+			filterStatus(m.sessList, "session"),
+			field("on disk", humanSize(TotalSize(m.curSessions)))),
 		m.commandBlock(it.s),
-		m.fitKeys("↑/↓ move · enter read · c copy · m mode · s sort · / filter · esc back · q quit",
-			"↑/↓ move · enter read · c copy · m mode · s sort · esc back · q quit",
-			"enter read · c copy · m mode · esc back · q quit"),
+		m.fitKeys("↑/↓ move · enter read · c copy · m mode · s sort · / filter · d delete · esc back · q quit",
+			"↑/↓ move · enter read · c copy · m mode · s sort · d delete · esc back · q quit",
+			"enter read · c copy · d delete · esc back · q quit"),
 	)
 }
 
@@ -670,20 +736,23 @@ func (m model) viewConversationRender() string {
 		oneLine(m.curSession.Title, atLeast(m.textWidth()-20, 8)))) +
 		dimStyle.Render(fmt.Sprintf("  %.0f%%", m.convVP.ScrollPercent()*100))
 
-	keys := m.fitKeys(
-		"↑/↓ scroll · [ ] prev/next prompt · / search · n/N matches · g/G top/bottom · c copy · m mode · esc back · q quit",
-		"↑/↓ scroll · [ ] prompt · / search · n/N match · g/G ends · c copy · m mode · esc back · q quit",
-		"↑/↓ scroll · / search · c copy · m mode · esc back · q quit",
-	)
-	if m.searching {
-		keys = "enter jump to first match · esc cancel"
+	footer := footerStyle.Render(m.fitKeys(
+		"↑/↓ scroll · [ ] prev/next prompt · / search · n/N matches · g/G top/bottom · c copy · m mode · d delete · esc back · q quit",
+		"↑/↓ scroll · [ ] prompt · / search · n/N match · g/G ends · c copy · m mode · d delete · esc back · q quit",
+		"↑/↓ scroll · / search · c copy · m mode · d delete · esc back · q quit",
+	))
+	switch {
+	case m.pending != nil:
+		footer = m.confirmLine()
+	case m.searching:
+		footer = footerStyle.Render("enter jump to first match · esc cancel")
 	}
 	return head + "\n" +
 		m.stickyHeader() + "\n" +
 		m.convVP.View() + "\n" +
 		m.statusLine(m.searchLine()) + "\n" +
 		m.commandBlock(m.curSession) + "\n" +
-		footerStyle.Render(keys)
+		footer
 }
 
 // searchLine is the search field itself while you type, and the search state
@@ -795,6 +864,135 @@ func plural(n int, noun string) string {
 	return fmt.Sprintf("%d %ss", n, noun)
 }
 
+// performDelete removes the confirmed session's file, then drops it from the
+// in-memory list rather than re-reading the whole folder.
+func (m model) performDelete() (tea.Model, tea.Cmd) {
+	t := *m.pending
+	m.pending = nil
+	if t.isProject {
+		return m.deleteProject(t.project)
+	}
+	s := t.session
+
+	if err := DeleteSession(s.FilePath); err != nil {
+		m.err = "delete failed: " + err.Error()
+		return m, nil
+	}
+	m.err = ""
+
+	kept := make([]Session, 0, len(m.curSessions))
+	for _, c := range m.curSessions {
+		if c.FilePath != s.FilePath {
+			kept = append(kept, c)
+		}
+	}
+	m.curSessions = kept
+	m.applySessionSort()
+	m.curProject.NumSess = len(kept)
+	m.curProject.SizeBytes = TotalSize(kept)
+	m.syncProjectItem()
+	// The list may have been sitting on the last row, which no longer exists.
+	if i := m.sessList.Index(); i >= len(kept) {
+		m.sessList.Select(atLeast(len(kept)-1, 0))
+	}
+
+	m.status = "deleted ✓  " + oneLine(s.Title, 60)
+	// Nothing left to read once the transcript on screen is gone.
+	if m.state == viewConversation {
+		m.state = viewSessions
+	}
+	return m, nil
+}
+
+// deleteProject removes every transcript in a project and drops its row.
+func (m model) deleteProject(p Project) (tea.Model, tea.Cmd) {
+	removed, err := DeleteProject(p.EncodedDir)
+	if err != nil {
+		// Report what did go before the failure, so a partial delete is never
+		// silent — the row's count would otherwise still look untouched.
+		m.err = fmt.Sprintf("delete failed after %s: %s", plural(removed, "file"), err)
+		if removed > 0 {
+			m.refreshProjects()
+		}
+		return m, nil
+	}
+	m.err = ""
+
+	kept := make([]Project, 0, len(m.curProjects))
+	for _, row := range m.curProjects {
+		if row.EncodedDir != p.EncodedDir {
+			kept = append(kept, row)
+		}
+	}
+	m.curProjects = kept
+	m.applyProjectSort()
+	// Anything loaded from the project just deleted is stale now.
+	if m.curProject.EncodedDir == p.EncodedDir {
+		m.curProject = Project{}
+		m.curSessions = nil
+		m.applySessionSort()
+	}
+	m.status = fmt.Sprintf("deleted ✓  %s (%s) in %s",
+		plural(removed, "session"), humanSize(p.SizeBytes), p.RealPath)
+	return m, nil
+}
+
+// refreshProjects re-scans ~/.claude/projects. Used after a partial failure,
+// where the in-memory counts can no longer be trusted.
+func (m *model) refreshProjects() {
+	ps, err := ListProjects()
+	if err != nil {
+		return
+	}
+	m.curProjects = ps
+	m.applyProjectSort()
+}
+
+// syncProjectItem writes the current project's session count and size back into
+// the projects list, so stepping back after a delete does not show a total that
+// includes a file no longer on disk.
+func (m *model) syncProjectItem() {
+	for i := range m.curProjects {
+		if m.curProjects[i].EncodedDir != m.curProject.EncodedDir {
+			continue
+		}
+		m.curProjects[i].NumSess = m.curProject.NumSess
+		m.curProjects[i].SizeBytes = m.curProject.SizeBytes
+		// Re-sort: under "size" or "sessions" the row has genuinely moved.
+		m.applyProjectSort()
+		return
+	}
+}
+
+// confirmLine is the delete prompt, shown in place of the key hints. It names
+// what is about to go and says plainly that it does not come back.
+func (m model) confirmLine() string {
+	// The tail — what confirms and what cancels — is the part that must never be
+	// cut off, so shorter phrasings drop the subject before the instructions.
+	if p := m.pending.project; m.pending.isProject {
+		// Deleting a project takes many transcripts at once, so the count leads:
+		// it is the number you would most regret being wrong about.
+		return errStyle.Render(m.fitKeys(
+			fmt.Sprintf("delete ALL %s (%s) in %s? this cannot be undone — y to delete, any other key cancels",
+				plural(p.NumSess, "session"), humanSize(p.SizeBytes), p.RealPath),
+			fmt.Sprintf("delete ALL %s (%s) in %s? y delete · any key cancels",
+				plural(p.NumSess, "session"), humanSize(p.SizeBytes), oneLine(p.RealPath, 30)),
+			fmt.Sprintf("delete ALL %s (%s)? y delete · any key cancels",
+				plural(p.NumSess, "session"), humanSize(p.SizeBytes)),
+			"delete whole project? y · any key cancels",
+		))
+	}
+	s := m.pending.session
+	return errStyle.Render(m.fitKeys(
+		fmt.Sprintf("delete %s \"%s\" (%s) permanently? this cannot be undone — y to delete, any other key cancels",
+			short(s.ID), oneLine(s.Title, 40), humanSize(s.SizeBytes)),
+		fmt.Sprintf("delete %s \"%s\" (%s)? cannot be undone — y delete · any key cancels",
+			short(s.ID), oneLine(s.Title, 24), humanSize(s.SizeBytes)),
+		fmt.Sprintf("delete %s permanently? y delete · any key cancels", short(s.ID)),
+		"delete? y · any key cancels",
+	))
+}
+
 // cycleMode advances to the next resume mode, wrapping around.
 func cycleMode(i int) int {
 	return (i + 1) % len(ResumeModes)
@@ -824,6 +1022,20 @@ func (m *model) copyResume() string {
 		return "copied ✓  prefixed with cd " + s.Cwd
 	}
 	return "copied ✓"
+}
+
+// applyProjectSort re-orders the loaded projects by the active sort mode and
+// rebuilds the list items.
+func (m *model) applyProjectSort() {
+	sortProjects(m.curProjects, m.projSort)
+	items := make([]list.Item, len(m.curProjects))
+	for i, p := range m.curProjects {
+		items[i] = projItem{p}
+	}
+	m.projList.SetItems(items)
+	if i := m.projList.Index(); i >= len(items) {
+		m.projList.Select(atLeast(len(items)-1, 0))
+	}
 }
 
 // applySessionSort re-orders the current project's sessions by the active sort

@@ -10,8 +10,9 @@ import (
 // by name (not index) so reordering ResumeModes/sortModes never corrupts a
 // saved preference.
 type config struct {
-	ResumeMode string `json:"resumeMode"`
-	SortMode   string `json:"sortMode"`
+	ResumeMode      string `json:"resumeMode"`
+	SortMode        string `json:"sortMode"`
+	ProjectSortMode string `json:"projectSortMode"`
 }
 
 // configPath returns ~/.config/ccsessions/config.json
@@ -95,5 +96,26 @@ func saveSortMode(i int) {
 	}
 	c := loadConfig()
 	c.SortMode = sortModes[i].Name
+	saveConfig(c)
+}
+
+// loadProjectSort returns the saved projects-list sort index, or 0 (recent).
+func loadProjectSort() int {
+	name := loadConfig().ProjectSortMode
+	for i, s := range projectSortModes {
+		if s.Name == name {
+			return i
+		}
+	}
+	return 0
+}
+
+// saveProjectSort persists the selected projects-list sort mode by name.
+func saveProjectSort(i int) {
+	if i < 0 || i >= len(projectSortModes) {
+		return
+	}
+	c := loadConfig()
+	c.ProjectSortMode = projectSortModes[i].Name
 	saveConfig(c)
 }

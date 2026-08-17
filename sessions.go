@@ -137,12 +137,46 @@ func sortSessions(ss []Session, mode int) {
 	sort.SliceStable(ss, func(i, j int) bool { return less(ss[i], ss[j]) })
 }
 
+// projectSortMode is the same idea for the projects list. The names deliberately
+// match the session ones where they mean the same thing, so the sort key reads
+// consistently on both screens.
+type projectSortMode struct {
+	Name string
+	Less func(a, b Project) bool
+}
+
+var projectSortModes = []projectSortMode{
+	{"recent", func(a, b Project) bool { return a.LastUsed.After(b.LastUsed) }},
+	{"sessions", func(a, b Project) bool { return a.NumSess > b.NumSess }},
+	{"size", func(a, b Project) bool { return a.SizeBytes > b.SizeBytes }},
+	{"path", func(a, b Project) bool { return strings.ToLower(a.RealPath) < strings.ToLower(b.RealPath) }},
+}
+
+// sortProjects orders projects in place by the given sort-mode index.
+func sortProjects(ps []Project, mode int) {
+	if mode < 0 || mode >= len(projectSortModes) {
+		mode = 0
+	}
+	less := projectSortModes[mode].Less
+	sort.SliceStable(ps, func(i, j int) bool { return less(ps[i], ps[j]) })
+}
+
+// TotalProjectSize sums every project's session files.
+func TotalProjectSize(ps []Project) int64 {
+	var n int64
+	for _, p := range ps {
+		n += p.SizeBytes
+	}
+	return n
+}
+
 // ---------- Project (a folder that has Claude sessions) ----------
 
 type Project struct {
 	EncodedDir string // absolute path under ~/.claude/projects
 	RealPath   string // decoded original working directory
 	NumSess    int
+	SizeBytes  int64 // total of every session file in the folder
 	LastUsed   time.Time
 }
 
@@ -189,7 +223,7 @@ func ListProjects() ([]Project, error) {
 			continue
 		}
 		dir := filepath.Join(root, e.Name())
-		files, real, last := scanDirQuick(dir)
+		files, size, real, last := scanDirQuick(dir)
 		if files == 0 {
 			continue
 		}
@@ -200,6 +234,7 @@ func ListProjects() ([]Project, error) {
 			EncodedDir: dir,
 			RealPath:   real,
 			NumSess:    files,
+			SizeBytes:  size,
 			LastUsed:   last,
 		})
 	}
@@ -209,12 +244,13 @@ func ListProjects() ([]Project, error) {
 	return projs, nil
 }
 
-// scanDirQuick counts .jsonl files, sniffs the real cwd from the newest file,
-// and returns the newest mod time. Cheap: reads only a few lines.
-func scanDirQuick(dir string) (count int, realPath string, last time.Time) {
+// scanDirQuick counts .jsonl files, totals their size, sniffs the real cwd from
+// the newest file, and returns the newest mod time. Cheap: the sizes come from
+// the directory entries already being walked, and only a few lines are read.
+func scanDirQuick(dir string) (count int, size int64, realPath string, last time.Time) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return 0, "", time.Time{}
+		return 0, 0, "", time.Time{}
 	}
 	var newest os.FileInfo
 	for _, e := range entries {
@@ -226,6 +262,7 @@ func scanDirQuick(dir string) (count int, realPath string, last time.Time) {
 		if err != nil {
 			continue
 		}
+		size += info.Size()
 		if newest == nil || info.ModTime().After(newest.ModTime()) {
 			newest = info
 		}
@@ -234,7 +271,16 @@ func scanDirQuick(dir string) (count int, realPath string, last time.Time) {
 		last = newest.ModTime()
 		realPath = sniffCwd(filepath.Join(dir, newest.Name()))
 	}
-	return count, realPath, last
+	return count, size, realPath, last
+}
+
+// TotalSize sums the session files in a loaded list.
+func TotalSize(ss []Session) int64 {
+	var n int64
+	for _, s := range ss {
+		n += s.SizeBytes
+	}
+	return n
 }
 
 // sniffCwd reads the first lines of a session file to find its cwd.
@@ -256,6 +302,70 @@ func sniffCwd(path string) string {
 		}
 	}
 	return ""
+}
+
+// DeleteSession permanently removes a session's transcript file. There is no
+// undo: Claude Code keeps no copy of it elsewhere.
+//
+// This is the only call in the app that destroys anything, so it re-derives the
+// projects root and refuses any path that is not a .jsonl file inside it. A bug
+// elsewhere that put a wrong path in a Session should not be able to delete an
+// unrelated file.
+func DeleteSession(path string) error {
+	root, err := projectsRoot()
+	if err != nil {
+		return err
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return err
+	}
+	if !strings.HasSuffix(abs, ".jsonl") {
+		return fmt.Errorf("refusing to delete %q: not a .jsonl session file", abs)
+	}
+	rel, err := filepath.Rel(root, abs)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+		return fmt.Errorf("refusing to delete %q: outside %s", abs, root)
+	}
+	return os.Remove(abs)
+}
+
+// DeleteProject removes every session transcript in a project folder, then the
+// folder itself. Returns how many files went.
+//
+// Only .jsonl files are removed, and the folder is only dropped if that leaves
+// it empty: anything else someone keeps in there survives, rather than a whole
+// directory being blown away on the strength of its name.
+func DeleteProject(encodedDir string) (removed int, err error) {
+	root, err := projectsRoot()
+	if err != nil {
+		return 0, err
+	}
+	abs, err := filepath.Abs(encodedDir)
+	if err != nil {
+		return 0, err
+	}
+	rel, err := filepath.Rel(root, abs)
+	if err != nil || rel == "." || rel == ".." ||
+		strings.HasPrefix(rel, "..") || strings.Contains(rel, string(os.PathSeparator)) {
+		return 0, fmt.Errorf("refusing to delete %q: not a project folder directly under %s", abs, root)
+	}
+	entries, err := os.ReadDir(abs)
+	if err != nil {
+		return 0, err
+	}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".jsonl") {
+			continue
+		}
+		if rmErr := os.Remove(filepath.Join(abs, e.Name())); rmErr != nil {
+			return removed, rmErr
+		}
+		removed++
+	}
+	// Succeeds only when nothing else is left in there.
+	_ = os.Remove(abs)
+	return removed, nil
 }
 
 // LoadSessions returns metadata for every session file in an encoded dir.
